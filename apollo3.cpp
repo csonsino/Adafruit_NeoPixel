@@ -8,7 +8,8 @@
 #include "Adafruit_NeoPixel.h"
 
 // The timing method used to control the NeoPixels
-#define PIN_METHOD_CTIMER_PWM
+//#define PIN_METHOD_CTIMER_PWM
+#define PIN_METHOD_FLASH_DELAY
 //#define PIN_METHOD_FAST_GPIO
 
 #if defined(PIN_METHOD_CTIMER_PWM)
@@ -38,6 +39,11 @@ static uint32_t hiCycles0;
 static uint32_t hiCycles1;
 #endif // PIN_METHOD_CTIMER_PWM
 
+#if defined(PIN_METHOD_FLASH_DELAY)
+#include <am_hal_flash.h>
+#define PWM_CLK_HZ    48000000
+#endif // PIN_METHOD_FLASH_DELAY
+
 static uint8_t *ptr, *end, p, bitMask;
 
 /*!
@@ -49,7 +55,7 @@ void Adafruit_NeoPixel::apollo3UnsetPad(ap3_gpio_pad_t pad) {
   // Disable interrupts for the Timer we are using on this board.
   am_hal_ctimer_int_disable(interrupt);
   NVIC_DisableIRQ(CTIMER_IRQn);
-#elif defined(PIN_METHOD_FAST_GPIO)
+#elif defined(PIN_METHOD_FLASH_DELAY) || defined(PIN_METHOD_FAST_GPIO)
   // Unconfigure the pad for Fast GPIO.
   am_hal_gpio_fastgpio_disable(pad);
 #endif
@@ -62,7 +68,7 @@ void Adafruit_NeoPixel::apollo3UnsetPad(ap3_gpio_pad_t pad) {
 void Adafruit_NeoPixel::apollo3SetPad(ap3_gpio_pad_t pad) {
 #if defined(PIN_METHOD_CTIMER_PWM)
   apollo3ConfigureTimer(pad);
-#elif defined(PIN_METHOD_FAST_GPIO)
+#elif defined(PIN_METHOD_FLASH_DELAY) || defined(PIN_METHOD_FAST_GPIO)
   // Configure the pad to be used for Fast GPIO.
   am_hal_gpio_fastgpio_disable(pad);
   am_hal_gpio_fastgpio_clr(pad);
@@ -108,6 +114,39 @@ void Adafruit_NeoPixel::apollo3Show(
 #endif // NEO_KHZ400
   process_next_pixel();
 // PIN_METHOD_CTIMER_PWM
+
+#elif defined(PIN_METHOD_FLASH_DELAY)
+  uint32_t delayCycles;
+  // disable interrupts
+  am_hal_interrupt_master_disable();
+#ifdef NEO_KHZ400 // 800 KHz check needed only if 400 KHz support enabled
+  if(is800KHz) {
+#endif
+    delayCycles = (uint32_t)round((PWM_CLK_HZ * 0.0000004) / 3); // 0 = 0.4 uS hi;
+#ifdef NEO_KHZ400
+  } else { // 400 KHz bitstream
+    // NOTE - This timing may need to be tweaked
+    delayCycles = (uint32_t)round((PWM_CLK_HZ * 0.0000008) / 3); // 0 = 0.8 uS hi;
+  }
+#endif // NEO_KHZ400
+  for(;;) {
+    am_hal_gpio_fastgpio_set(pad);
+    if(::p & ::bitMask) {
+      am_hal_flash_delay(delayCycles);
+      am_hal_gpio_fastgpio_clr(pad);
+    } else {
+      am_hal_gpio_fastgpio_clr(pad);
+      am_hal_flash_delay(delayCycles);
+    }
+    if (!(::bitMask >>= 1)) {
+      if(::ptr >= ::end) break;
+      ::p       = *::ptr++;
+      ::bitMask = 0x80;
+    }
+  }
+  // re-enable interrupts
+  am_hal_interrupt_master_enable();
+// PIN_METHOD_FLASH_DELAY
 
 #elif defined(PIN_METHOD_FAST_GPIO)
   // Note - The timings used below are based on the Arduino Zero,
